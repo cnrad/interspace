@@ -29,11 +29,11 @@ SECRET_FILE="$HOME/.config/interspace/signing-keychain-password"
 
 if [ -f "$KEYCHAIN" ] && [ -f "$SECRET_FILE" ]; then
     security unlock-keychain -p "$(cat "$SECRET_FILE")" "$KEYCHAIN"
-    codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --identifier com.cnrad.interspace "$APP"
+    codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --options runtime --identifier com.cnrad.interspace "$APP"
 else
     echo "No local signing identity (run scripts/setup-signing.sh). Using an ad-hoc signature:"
     echo "each new build must be allowed again in System Settings."
-    codesign --force --sign - --identifier com.cnrad.interspace "$APP"
+    codesign --force --sign - --options runtime --identifier com.cnrad.interspace "$APP"
 fi
 
 echo "Built $APP"
