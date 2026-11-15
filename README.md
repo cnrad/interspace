@@ -23,11 +23,24 @@ You need macOS 14 or newer. The app runs on Apple silicon and Intel.
 
 Steps 3 and 4 are necessary one time only.
 
+### Install with Homebrew
+
+The cask lives in this repository, so tell Homebrew where it is, then install:
+
+```sh
+brew tap cnrad/interspace https://github.com/cnrad/interspace
+brew install --cask cnrad/interspace/interspace
+```
+
+Homebrew installs the same DMG as the download above, so macOS stops it the same way. Do steps 3 and 4 above.
+
 ### Update
 
 Choose **Check for Updates…** in the menu bar menu. If there is a newer release, Interspace downloads it, installs it in the place of the old one, and opens again. Your permissions and settings stay.
 
 Interspace installs a download only if it has the same signature as the releases of this project and a newer version. If not, it changes nothing.
+
+A copy from Homebrew updates itself the same way, so `brew upgrade` skips it. `brew upgrade --cask --greedy interspace` updates it from Homebrew instead.
 
 ### Permissions
 
@@ -49,6 +62,12 @@ curl -fsSL https://raw.githubusercontent.com/cnrad/interspace/main/scripts/unins
 ```
 
 This removes the app, its login item, its two permissions and its settings.
+
+If you installed it with Homebrew, this does the same:
+
+```sh
+brew uninstall --zap --cask interspace
+```
 
 ### Build it from source
 
@@ -110,7 +129,10 @@ Quit Interspace and the normal macOS behaviour is back at once.
 scripts/setup-signing.sh   # one time: a local signing identity, so permissions survive rebuilds
 scripts/bundle.sh          # builds build/Interspace.app
 scripts/dmg.sh             # builds build/Interspace.dmg, the universal download of a release
+scripts/cask.sh            # sets the version and checksum in Casks/interspace.rb to those of the DMG
 ```
+
+Commit the change that `scripts/cask.sh` makes with each release, or Homebrew keeps installing the previous one.
 
 A release is `build/Interspace.dmg`, attached to a GitHub release with that exact file name. Each release must be signed with the same identity, or everyone must allow the two permissions again after an update. The app also refuses an update with a different signature: the one it accepts is in `Updater.swift`, and `scripts/dmg.sh` stops if the build does not have it. So keep a copy of `~/Library/Keychains/interspace-signing.keychain-db` and `~/.config/interspace/signing-keychain-password`.
 
