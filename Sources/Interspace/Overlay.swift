@@ -385,7 +385,7 @@ final class Overlay {
     /// Sizes the window and the layers for a screen. Does not show the window.
     /// Each transition calls it, and most of the time nothing changed: then it does nothing.
     func attach(to screen: NSScreen) {
-        wantsOwnSpace = !isBelowDock && screen.displayID == CGMainDisplayID()
+        wantsOwnSpace = !isBelowDock && screen.displayID == CGMainDisplayID() && !Self.ownSpaceTurnedOff
         if isInOwnSpace, !wantsOwnSpace {
             replacePanel()
         }
@@ -431,6 +431,9 @@ final class Overlay {
 
     /// The move to a space of our own failed: not tried again for this run of the app.
     private var ownSpaceFailed = false
+    /// To compare with and without the space of our own: `defaults write com.cnrad.interspace
+    /// debugNoOwnSpace -bool true`, read at launch.
+    private static let ownSpaceTurnedOff = UserDefaults.standard.bool(forKey: "debugNoOwnSpace")
     private static let log = Logger(subsystem: "com.cnrad.interspace", category: "overlay")
 
     /// After a move to a space of our own: the window must be on screen, and on no desktop. If it is not,
