@@ -34,8 +34,19 @@ enum Config {
     /// 0.01 is 18 points on a 1800 point wide screen and is visible, 0.0015 is under 3 points.
     static let revealStartDistance: CGFloat = 0.0015
     /// The check of the live desktop starts when the screen is this close to its final place,
-    /// so the answer is ready when the snap ends.
-    static let liveCheckStartDistance: CGFloat = 0.2
+    /// so the answer is ready when the snap ends. Each look takes about 20 ms of work in the window server,
+    /// which also draws the transition, and can make it miss a frame. This close to the end the picture
+    /// moves a few points a frame, so a missed frame does not show, and the answer still comes about when
+    /// the snap ends.
+    static let liveCheckStartDistance: CGFloat = 0.01
+
+    /// The real switch of the space, below the overlay, is sent when the screen is this close to its final
+    /// place. A switch makes the window server miss a frame of everything on screen (measured: about one for
+    /// each switch), and a missed frame shows only while the picture moves fast. Here it moves about 5 points
+    /// a frame, and it takes the snap about 55 ms more to come to rest: the Dock lands in 15 to 70 ms, so the
+    /// fade seldom has to wait for it. At rest (0.0015) the fade waited about 100 ms with a still picture.
+    /// A swipe that catches the picture before this point, and goes back, needs no switch at all.
+    static let switchDistance: CGFloat = 0.01
 
     /// After a switch, the fade waits until the live desktop below has stopped changing,
     /// so it never shows a space that is still drawing. This is the longest it waits, in seconds.

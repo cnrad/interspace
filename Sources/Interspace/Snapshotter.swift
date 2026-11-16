@@ -102,10 +102,15 @@ final class Snapshotter {
     /// The capture that runs for each display. A result with a different number is from a capture that
     /// was given up, and it is ignored.
     private var running: [CGDirectDisplayID: Int] = [:]
+    /// When the capture that runs for each display started.
+    private var runningSince: [CGDirectDisplayID: CFTimeInterval] = [:]
     private var lastCaptureNumber = 0
     /// A capture takes much less than 0.1 s. The capture service can stop answering, and then the
     /// callers must not wait with no end.
     private static let captureTimeout: Double = 2
+    /// A capture that runs longer than this is not shared with a new caller, who would wait on it with the
+    /// gesture in progress: a new capture starts, and every caller gets its result. Measured: 30 to 140 ms.
+    private static let staleCapture: Double = 0.3
 
     /// Loads the display and window lists. It is slow, so do it before the first swipe.
     func refreshDisplays(_ completion: (() -> Void)? = nil) {
@@ -133,12 +138,15 @@ final class Snapshotter {
         let displayID = screen.displayID
         if waiters[displayID] != nil {
             waiters[displayID]?.append(completion)
-            return
+            guard CACurrentMediaTime() - (runningSince[displayID] ?? 0) > Self.staleCapture else { return }
+            // The capture that runs is late. Its result, if it comes, is ignored: see `finish`.
+        } else {
+            waiters[displayID] = [completion]
         }
-        waiters[displayID] = [completion]
         lastCaptureNumber += 1
         let number = lastCaptureNumber
         running[displayID] = number
+        runningSince[displayID] = CACurrentMediaTime()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.captureTimeout) { [weak self] in
             guard let self, self.running[displayID] == number else { return }
@@ -419,6 +427,7 @@ final class Snapshotter {
     private func finish(_ displayID: CGDirectDisplayID, _ snapshot: Snapshot?, _ number: Int) {
         guard running[displayID] == number else { return }
         running[displayID] = nil
+        runningSince[displayID] = nil
         let callbacks = waiters.removeValue(forKey: displayID) ?? []
         for callback in callbacks {
             callback(snapshot)
