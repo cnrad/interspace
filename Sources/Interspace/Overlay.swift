@@ -1,4 +1,5 @@
 import AppKit
+import os
 import QuartzCore
 
 /// What one of the three screens in the transition shows.
@@ -109,6 +110,7 @@ final class Overlay {
 
     private let cards = (0..<(reach * 2 + 1)).map { _ in Card() }
     private var size = CGSize.zero
+    private var cardRadius: CGFloat = -1
 
     private(set) var isVisible = false
 
@@ -133,8 +135,18 @@ final class Overlay {
         didSet {
             guard isBelowDock != oldValue else { return }
             panel.level = Self.level(belowDock: isBelowDock)
+            if isBelowDock, isInOwnSpace {
+                // Our space is above the Dock: the window goes back to the desktops.
+                replacePanel()
+            }
         }
     }
+
+    /// True when the window is in a space of its own, above the spaces of the user: see
+    /// `Spaces.moveToOwnSpace`. Only above everything, so not when it is below the Dock, and only on the main
+    /// display, the one this was measured on. Elsewhere it is on all desktops, as a window can be.
+    private(set) var isInOwnSpace = false
+    private var wantsOwnSpace = false
 
     private static func level(belowDock: Bool) -> NSWindow.Level {
         belowDock
@@ -176,16 +188,37 @@ final class Overlay {
         return panel
     }
 
+    /// The desktops the window was last found to be on all of, and when. See `ensureOnAllDesktops`.
+    private var checkedDesktops: [UInt64]?
+    private var checkedAt: CFTimeInterval = 0
+
     /// The window must be on every desktop: the Dock switches below it, and a window that is on one
     /// desktop only disappears at that moment. macOS takes a window out of "all desktops" when a desktop
     /// is removed. A new window is on all of them again, so this replaces the window when one is missing.
     /// Returns true when it replaced the window.
+    ///
+    /// The check is a call to the window server, which can take several milliseconds. It is skipped when
+    /// the same desktops were checked less than `maxAge` seconds ago: a desktop that is added or removed
+    /// changes the list, and so asks for a new check.
     @discardableResult
-    func ensureOnAllDesktops(_ desktopIDs: [UInt64]) -> Bool {
+    func ensureOnAllDesktops(_ desktopIDs: [UInt64], maxAge: CFTimeInterval = .infinity) -> Bool {
+        // In a space of its own the window is on no desktop, and shows on all of them.
+        guard !isInOwnSpace else { return false }
+        if desktopIDs == checkedDesktops, CACurrentMediaTime() - checkedAt < maxAge {
+            return false
+        }
         let current = Spaces.spaces(ofWindow: panel.windowNumber)
         // Empty means the window was never on screen, and then there is nothing to repair.
-        guard !current.isEmpty, !Set(current).isSuperset(of: desktopIDs) else { return false }
+        guard !current.isEmpty else { return false }
+        checkedDesktops = desktopIDs
+        checkedAt = CACurrentMediaTime()
+        guard !Set(current).isSuperset(of: desktopIDs) else { return false }
+        replacePanel()
+        return true
+    }
 
+    /// A new window in place of this one, with the same content. A new window is on all desktops.
+    private func replacePanel() {
         let old = panel
         let fresh = Self.makePanel()
         let view = old.contentView
@@ -195,13 +228,14 @@ final class Overlay {
         fresh.level = old.level
         fresh.alphaValue = old.alphaValue
         panel = fresh
+        isInOwnSpace = false
+        checkedDesktops = nil
         if isVisible {
             CATransaction.flush()
             fresh.orderFrontRegardless()
         }
         old.orderOut(nil)
         old.close()
-        return true
     }
 
     /// For a capture of everything below the overlay.
@@ -349,10 +383,19 @@ final class Overlay {
     }
 
     /// Sizes the window and the layers for a screen. Does not show the window.
+    /// Each transition calls it, and most of the time nothing changed: then it does nothing.
     func attach(to screen: NSScreen) {
-        panel.setFrame(screen.frame, display: false)
-        size = screen.frame.size
+        wantsOwnSpace = !isBelowDock && screen.displayID == CGMainDisplayID() && !Self.ownSpaceTurnedOff
+        if isInOwnSpace, !wantsOwnSpace {
+            replacePanel()
+        }
+        if panel.frame != screen.frame {
+            panel.setFrame(screen.frame, display: false)
+        }
         let radius = roundsCorners ? Self.cornerRadius(of: screen) : 0
+        guard screen.frame.size != size || radius != cardRadius else { return }
+        size = screen.frame.size
+        cardRadius = radius
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -370,6 +413,48 @@ final class Overlay {
         panel.orderFrontRegardless()
         presentedAt = CACurrentMediaTime()
         isVisible = true
+        if wantsOwnSpace, !isInOwnSpace, !ownSpaceFailed {
+            // Once for each window: it stays in that space. The window server takes the move after the
+            // window comes on screen, in order, but only reports either a moment later: see `checkOwnSpace`.
+            if Spaces.moveToOwnSpace(windowNumber: panel.windowNumber) {
+                isInOwnSpace = true
+                let moved = panel
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.checkOwnSpace(moved)
+                }
+            } else {
+                ownSpaceFailed = true
+                Self.log.error("no space of its own for the overlay window, it stays on all desktops")
+            }
+        }
+    }
+
+    /// The move to a space of our own failed: not tried again for this run of the app.
+    private var ownSpaceFailed = false
+    /// To compare with and without the space of our own: `defaults write com.cnrad.interspace
+    /// debugNoOwnSpace -bool true`, read at launch.
+    private static let ownSpaceTurnedOff = UserDefaults.standard.bool(forKey: "debugNoOwnSpace")
+    private static let log = Logger(subsystem: "com.cnrad.interspace", category: "overlay")
+
+    /// After a move to a space of our own: the window must be on screen, and on no desktop. If it is not,
+    /// a new window takes its place, on all desktops as before.
+    private func checkOwnSpace(_ moved: NSPanel) {
+        // Hidden again, or replaced: the next window that is shown is checked.
+        guard moved === panel, isInOwnSpace else { return }
+        guard isVisible else {
+            isInOwnSpace = false
+            return
+        }
+        let onDesktops = Spaces.spaces(ofWindow: panel.windowNumber)
+        let info = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(panel.windowNumber)) as? [[String: Any]]
+        let onScreen = (info?.first?[kCGWindowIsOnscreen as String] as? Bool) == true
+        if onDesktops.isEmpty, onScreen {
+            Self.log.info("the overlay window is in a space of its own")
+            return
+        }
+        Self.log.error("the overlay window did not move to a space of its own (on screen \(onScreen), on \(onDesktops.count) desktops), it stays on all desktops")
+        ownSpaceFailed = true
+        replacePanel()
     }
 
     /// Draws a loader above the screens, or removes it with `nil`. Call after `attach(to:)`.

@@ -32,6 +32,8 @@
 #include <ApplicationServices/ApplicationServices.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach_time.h>
+#include <math.h>
+#include <os/log.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -39,6 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/sysctl.h>
+#include <time.h>
 
 // MARK: - Private event constants
 
@@ -80,8 +83,16 @@ static const double kMinimalProgress = 0.000016;
 // The fling on the ended phase is what commits the switch on macOS 27 (16.16 fixed point, max ~32767).
 static const double kModernFlingVelocity = 9999.0;
 static const double kLegacyVelocity = 2000.0;
+static const uint64_t kNanosecondsPerSecond = 1000000000ull;
 // Our own events come back through the tap within milliseconds of being posted.
-static const CFTimeInterval kSyntheticWindow = 1.0;
+static const uint64_t kSyntheticWindow = kNanosecondsPerSecond;
+// A real swipe that is being swallowed sends an event every few milliseconds while the fingers move.
+static const uint64_t kTrackingStale = kNanosecondsPerSecond / 2;
+// Our own events carry this in kCGEventSourceUserData, so the tap can tell them from the user's.
+static const int64_t kOwnEventMark = 0x49535043; // "ISPC"
+// The progress of our own swipes is kMinimalProgress, or that rounded to 16.16 fixed point. A real swipe
+// that has moved is never this close to zero.
+static const double kOwnProgressLimit = 0.00004;
 
 // MARK: - State
 
@@ -91,10 +102,29 @@ static const CFTimeInterval kSyntheticWindow = 1.0;
 static CFMachPortRef gTap = NULL;
 static atomic_bool gSuppress = false;
 static atomic_bool gTracking = false;
-static atomic_uint gSyntheticToPass = 0;
-static _Atomic(CFAbsoluteTime) gLastPostTime = 0;
+// When the tap last swallowed an event of the real swipe it tracks. See kTrackingStale.
+static _Atomic(uint64_t) gTrackedAt = 0;
+// Our own events posted and not back through the tap yet, of each kind. One count for each kind, so an
+// event of one kind never uses up the count of the other.
+static atomic_uint gDockToPass = 0;
+static atomic_uint gCompanionToPass = 0;
+static _Atomic(uint64_t) gLastPostAt = 0;
+// Set when an event of ours of that kind came back and could be told apart from the user's. From then on
+// an event of that kind passes as ours only when it is ours, and a real event that comes in between our
+// own can no longer take the place of one of them. Until then, the counts decide, as they always did.
+static atomic_bool gOwnDockKnown = false;
+static atomic_bool gOwnCompanionKnown = false;
+// Set when an event of ours came back with its mark. From then on only the mark tells our events apart.
+static atomic_bool gMarkSeen = false;
+// Tap thread only.
+static uint64_t gLastInterleaveLog = 0;
+static os_log_t gLog = NULL;
 // Main thread only.
 static int gNaturalScrolling = -1;
+
+static uint64_t now_ns(void) {
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+}
 
 // MARK: - macOS 27 payload
 
@@ -255,9 +285,11 @@ static CGEventRef augment_event(CGEventRef event) {
 }
 
 bool ds_requires_event_augmentation(void) {
-    static int cached = -1;
-    if (cached != -1) {
-        return cached;
+    // The main thread and the tap thread both ask.
+    static atomic_int cached = -1;
+    int value = atomic_load(&cached);
+    if (value != -1) {
+        return value;
     }
 
     char version[32] = {0};
@@ -265,12 +297,13 @@ bool ds_requires_event_augmentation(void) {
     int major = 0;
     if (sysctlbyname("kern.osproductversion", version, &size, NULL, 0) != 0 ||
         sscanf(version, "%d", &major) < 1) {
-        cached = 0;
+        atomic_store(&cached, 0);
         return false;
     }
 
-    cached = (major >= 27) ? 1 : 0;
-    return cached;
+    value = (major >= 27) ? 1 : 0;
+    atomic_store(&cached, value);
+    return value;
 }
 
 // MARK: - Posting
@@ -330,10 +363,14 @@ static bool post_modern(int phase, DSDirection direction) {
         return false;
     }
     CGEventSetIntegerValueField(companion, kCGSEventTypeField, kCGSEventGesture);
+    // Marked as ours for the tap, on the events as they are posted: after the serialization above.
+    CGEventSetIntegerValueField(augmented, kCGEventSourceUserData, kOwnEventMark);
+    CGEventSetIntegerValueField(companion, kCGEventSourceUserData, kOwnEventMark);
 
     if (gTap) {
         // Before the events are posted: the tap thread can get them at once.
-        atomic_fetch_add(&gSyntheticToPass, 2);
+        atomic_fetch_add(&gDockToPass, 1);
+        atomic_fetch_add(&gCompanionToPass, 1);
     }
     CGEventPost(kCGSessionEventTap, augmented);
     CGEventPost(kCGSessionEventTap, companion);
@@ -369,13 +406,56 @@ static bool post_phase(int phase, DSDirection direction) {
 
 bool ds_post_switch(DSDirection direction) {
     // All three phases are needed; with only began + ended Mission Control breaks.
-    atomic_store(&gLastPostTime, CFAbsoluteTimeGetCurrent());
+    // The time is set before the counts go up: see `expire_count`.
+    atomic_store(&gLastPostAt, now_ns());
     return post_phase(kCGSGesturePhaseBegan, direction)
         && post_phase(kCGSGesturePhaseChanged, direction)
         && post_phase(kCGSGesturePhaseEnded, direction);
 }
 
 // MARK: - Tap
+
+// A count left over after the burst would let real swipes slip past the suppression.
+// The count is read before the time, and the time before now. If the main thread posts a new swipe between
+// the reads, the time is new and nothing is cleared. If it posts after them, the count has changed and the
+// exchange fails. So a swipe that is being posted now never loses its count.
+static void expire_count(atomic_uint *count) {
+    unsigned int pending = atomic_load(count);
+    if (pending == 0) return;
+    uint64_t posted = atomic_load(&gLastPostAt);
+    uint64_t now = now_ns();
+    if (now > posted && now - posted > kSyntheticWindow) {
+        atomic_compare_exchange_strong(count, &pending, 0);
+    }
+}
+
+static bool take_one(atomic_uint *count) {
+    unsigned int pending = atomic_load(count);
+    while (pending > 0) {
+        // On failure `pending` gets the current count, and the loop tries again.
+        if (atomic_compare_exchange_weak(count, &pending, pending - 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// True for an event we posted. The mark is the sure sign. If the mark does not come back through the
+/// window server, a Dock event of ours still has the tiny progress of our swipes. That sign is used only
+/// while no mark has been seen, and only while Dock events of ours are on their way: the first changed
+/// event of a real swipe can have a progress that small. Before macOS 27 our events are never counted,
+/// so it is never used there.
+static bool is_own_event(CGEventRef event, bool isDock, bool *byMark) {
+    *byMark = CGEventGetIntegerValueField(event, kCGEventSourceUserData) == kOwnEventMark;
+    if (*byMark) {
+        atomic_store(&gMarkSeen, true);
+        return true;
+    }
+    if (!isDock || atomic_load(&gMarkSeen) || atomic_load(&gDockToPass) == 0) return false;
+    if ((uint32_t)CGEventGetIntegerValueField(event, kCGEventGestureHIDType) != kIOHIDEventTypeDockSwipe) return false;
+    double progress = fabs(CGEventGetDoubleValueField(event, kCGEventGestureSwipeProgress));
+    return progress > 0.0 && progress <= kOwnProgressLimit;
+}
 
 static CGEventRef tap_callback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
     (void)proxy;
@@ -384,29 +464,41 @@ static CGEventRef tap_callback(CGEventTapProxy proxy, CGEventType type, CGEventR
     if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
         if (gTap) CGEventTapEnable(gTap, true);
         // Anything posted while the tap was disabled never reaches us.
-        atomic_store(&gSyntheticToPass, 0);
+        atomic_store(&gDockToPass, 0);
+        atomic_store(&gCompanionToPass, 0);
         return event;
     }
 
     uint32_t eventType = (uint32_t)CGEventGetIntegerValueField(event, kCGSEventTypeField);
-    bool isGestureEvent = (eventType == kCGSEventDockControl || eventType == kCGSEventGesture);
+    bool isDock = (eventType == kCGSEventDockControl);
+    bool isGestureEvent = isDock || eventType == kCGSEventGesture;
 
-    // A count left over after the burst would let real swipes slip past the suppression.
-    // The count is read before the time. If the main thread posts a new swipe between the two reads, the
-    // time is new and nothing is cleared. If it posts after them, the count has changed and the exchange
-    // fails. So a swipe that is being posted now never loses its count.
-    unsigned int pending = atomic_load(&gSyntheticToPass);
-    if (pending > 0 && CFAbsoluteTimeGetCurrent() - atomic_load(&gLastPostTime) > kSyntheticWindow) {
-        atomic_compare_exchange_strong(&gSyntheticToPass, &pending, 0);
-    }
-
-    // On macOS 27 our own swipes re-enter the tap with sourcePid == 0, so count them out.
+    // On macOS 27 our own swipes re-enter the tap with sourcePid == 0, as the user's do. They pass.
     if (isGestureEvent) {
-        pending = atomic_load(&gSyntheticToPass);
-        while (pending > 0) {
-            // On failure `pending` gets the current count, and the loop tries again.
-            if (atomic_compare_exchange_weak(&gSyntheticToPass, &pending, pending - 1)) {
-                return event;
+        atomic_uint *count = isDock ? &gDockToPass : &gCompanionToPass;
+        atomic_bool *known = isDock ? &gOwnDockKnown : &gOwnCompanionKnown;
+        expire_count(count);
+        bool byMark = false;
+        if (is_own_event(event, isDock, &byMark)) {
+            take_one(count);
+            if (!atomic_exchange(known, true)) {
+                os_log(gLog, "the tap tells our own %{public}s events from the user's, %{public}s",
+                       isDock ? "Dock" : "gesture", byMark ? "by their mark" : "by their progress");
+            }
+            return event;
+        }
+        if (atomic_load(count) > 0) {
+            if (!atomic_load(known)) {
+                // It is not known yet if our events of this kind can be told apart: count them out.
+                if (take_one(count)) return event;
+            } else {
+                // The case that used to let a real event take the place of one of ours.
+                uint64_t now = now_ns();
+                if (now - gLastInterleaveLog > kNanosecondsPerSecond) {
+                    gLastInterleaveLog = now;
+                    os_log(gLog, "a real %{public}s event came between our own, and is handled as the user's",
+                           isDock ? "Dock" : "gesture");
+                }
             }
         }
     }
@@ -433,6 +525,7 @@ static CGEventRef tap_callback(CGEventTapProxy proxy, CGEventType type, CGEventR
         switch (phase) {
         case kCGSGesturePhaseBegan:
             atomic_store(&gTracking, true);
+            atomic_store(&gTrackedAt, now_ns());
             return NULL;
 
         case kCGSGesturePhaseEnded:
@@ -452,13 +545,21 @@ static CGEventRef tap_callback(CGEventTapProxy proxy, CGEventType type, CGEventR
             return NULL;
 
         default:
-            return atomic_load(&gTracking) ? NULL : event;
+            if (!atomic_load(&gTracking)) return event;
+            atomic_store(&gTrackedAt, now_ns());
+            return NULL;
         }
     }
 
-    // Companion gesture events of a swipe we are swallowing.
+    // Companion gesture events of a swipe we are swallowing. Only while that swipe is alive: a tracking
+    // state whose ended event was lost must not swallow the pinches, rotations and swipes that come after.
     if (eventType == kCGSEventGesture && atomic_load(&gTracking)) {
-        return NULL;
+        uint64_t tracked = atomic_load(&gTrackedAt);
+        uint64_t now = now_ns();
+        if (now < tracked || now - tracked < kTrackingStale) {
+            atomic_store(&gTrackedAt, now);
+            return NULL;
+        }
     }
 
     return event;
@@ -492,6 +593,9 @@ bool ds_tap_install(void) {
         return false;
     }
     gTap = tap;
+    if (!gLog) {
+        gLog = os_log_create("com.cnrad.interspace", "tap");
+    }
 
     pthread_t thread;
     pthread_attr_t attributes;
@@ -546,6 +650,10 @@ static CGEventRef key_tap_callback(CGEventTapProxy proxy, CGEventType type, CGEv
 
     if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
         if (gKeyTap) CGEventTapEnable(gKeyTap, true);
+        // A key up that came while the tap was off went to the system. Waiting for it would swallow the
+        // key up of a later press that is not ours.
+        atomic_store(&gKeyHeld[0], false);
+        atomic_store(&gKeyHeld[1], false);
         return event;
     }
     if (type != kCGEventKeyDown && type != kCGEventKeyUp) {

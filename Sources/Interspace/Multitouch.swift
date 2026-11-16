@@ -1,11 +1,15 @@
 import Foundation
 import CoreGraphics
+import QuartzCore
 
 /// One trackpad report. `points` are the fingers in contact, normalized 0...1 (x: left to right, y: bottom to top).
 struct TouchFrame {
     let device: UInt
     let timestamp: Double
     let points: [CGPoint]
+    /// When the report reached the app, on the clock of `CACurrentMediaTime`. Taken on the thread of the
+    /// callback, so time the report waits for the main thread does not count.
+    var arrival: CFTimeInterval = CACurrentMediaTime()
 }
 
 /// Raw trackpad contacts through the private MultitouchSupport framework.
@@ -97,6 +101,7 @@ private let xOffset = 32
 private let yOffset = 36
 
 private let contactCallback: MultitouchMonitor.ContactCallback = { device, touches, count, timestamp, _ in
+    let arrival = CACurrentMediaTime()
     let monitor = MultitouchMonitor.shared
     let deviceID = UInt(bitPattern: device)
 
@@ -120,7 +125,7 @@ private let contactCallback: MultitouchMonitor.ContactCallback = { device, touch
     os_unfair_lock_unlock(&monitor.lock)
     guard points.count >= 3 || previous >= 3 else { return 0 }
 
-    let frame = TouchFrame(device: deviceID, timestamp: timestamp, points: points)
+    let frame = TouchFrame(device: deviceID, timestamp: timestamp, points: points, arrival: arrival)
     DispatchQueue.main.async {
         monitor.onFrame?(frame)
     }

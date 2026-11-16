@@ -8,8 +8,10 @@ final class SwipeRecognizer {
     var onArm: (() -> Void)?
     /// The touch ended, or became something else, before a horizontal drag started.
     var onDisarm: (() -> Void)?
-    var onBegin: (() -> Void)?
-    var onChange: ((_ dx: CGFloat) -> Void)?
+    /// `time` is the arrival of the report where the drag starts. `dx` is 0 there.
+    var onBegin: ((_ time: CFTimeInterval) -> Void)?
+    /// `time` is the arrival of the report, on the clock of `CACurrentMediaTime`.
+    var onChange: ((_ dx: CGFloat, _ time: CFTimeInterval) -> Void)?
     /// `velocity` is trackpad widths per second. `cancelled` means the drag must snap back.
     var onEnd: ((_ velocity: CGFloat, _ cancelled: Bool) -> Void)?
 
@@ -74,7 +76,7 @@ final class SwipeRecognizer {
                 origin = centroid.x
                 lastDX = 0
                 history = [(frame.timestamp, 0)]
-                onBegin?()
+                onBegin?(frame.arrival)
             } else if abs(dy) >= Config.directionSlop {
                 state = .ignored
                 onDisarm?()
@@ -103,7 +105,7 @@ final class SwipeRecognizer {
             while let first = history.first, frame.timestamp - first.time > 0.1, history.count > 2 {
                 history.removeFirst()
             }
-            onChange?(dx)
+            onChange?(dx, frame.arrival)
 
         case .ignored:
             if count < Self.fingerRange.lowerBound {

@@ -58,6 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         SpaceShortcuts.onStep = { [weak self] step in
             self?.controller.keyboardStep(step)
         }
+        DebugAutomation.installIfEnabled { [weak self] step in
+            self?.controller.keyboardStep(step)
+        }
 
         MultitouchMonitor.shared.onFrame = { [weak self] frame in
             self?.controller.handle(frame)
