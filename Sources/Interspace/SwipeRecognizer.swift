@@ -1,10 +1,10 @@
 import Foundation
 import CoreGraphics
 
-/// Turns raw touch frames into a horizontal three (or four) finger drag.
+/// Turns raw touch frames into a horizontal drag with the finger count of a swipe between spaces.
 /// All distances are fractions of the trackpad width; positive is to the right.
 final class SwipeRecognizer {
-    /// Three fingers are down, direction not known yet.
+    /// The fingers of a swipe are down, direction not known yet.
     var onArm: (() -> Void)?
     /// The touch ended, or became something else, before a horizontal drag started.
     var onDisarm: (() -> Void)?
@@ -21,7 +21,9 @@ final class SwipeRecognizer {
         case ignored
     }
 
-    private static let fingerRange = 3...4
+    /// The finger counts of the swipe of macOS. It is read when a touch starts, so it does not change
+    /// in the middle of one.
+    private var fingerRange = 3...4
 
     private var state = State.idle
     private var device: UInt = 0
@@ -39,9 +41,12 @@ final class SwipeRecognizer {
 
         switch state {
         case .idle:
-            guard count >= Self.fingerRange.lowerBound else { return }
+            // Off in System Settings: no swipe.
+            guard let range = SwipeFingers.range else { return }
+            fingerRange = range
+            guard count >= fingerRange.lowerBound else { return }
             device = frame.device
-            guard count <= Self.fingerRange.upperBound else {
+            guard count <= fingerRange.upperBound else {
                 state = .ignored
                 return
             }
@@ -51,12 +56,12 @@ final class SwipeRecognizer {
             onArm?()
 
         case .pending:
-            if count < Self.fingerRange.lowerBound {
+            if count < fingerRange.lowerBound {
                 state = .idle
                 onDisarm?()
                 return
             }
-            if count > Self.fingerRange.upperBound {
+            if count > fingerRange.upperBound {
                 state = .ignored
                 onDisarm?()
                 return
@@ -81,14 +86,14 @@ final class SwipeRecognizer {
             }
 
         case .active:
-            if count < Self.fingerRange.lowerBound {
+            if count < fingerRange.lowerBound {
                 // The lift frame is not used for position: the centroid jumps when a finger leaves.
                 let velocity = releaseVelocity(at: frame.timestamp)
                 state = .idle
                 onEnd?(velocity, false)
                 return
             }
-            if count > Self.fingerRange.upperBound {
+            if count > fingerRange.upperBound {
                 state = .ignored
                 onEnd?(0, true)
                 return
@@ -106,7 +111,7 @@ final class SwipeRecognizer {
             onChange?(dx)
 
         case .ignored:
-            if count < Self.fingerRange.lowerBound {
+            if count < fingerRange.lowerBound {
                 state = .idle
             }
         }

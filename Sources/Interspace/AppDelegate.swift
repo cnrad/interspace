@@ -88,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Turns the transition on only when every part it needs works. If not, the system swipe stays as it is.
     private func evaluate() {
         hasAccessibility = AXIsProcessTrusted()
+        // The swipe of macOS changes in System Settings too.
+        SwipeFingers.refresh()
         let screenRecording = CGPreflightScreenCaptureAccess()
         if screenRecording, !hasScreenRecording {
             controller.prewarm()
@@ -108,7 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let active = settings.transition.isCustom && hasAccessibility && hasScreenRecording && tapInstalled && hasTrackpad
             && Spaces.isAvailable
         let status = "active=\(active) transition=\(settings.transition.rawValue) accessibility=\(hasAccessibility) "
-            + "screenRecording=\(hasScreenRecording) tap=\(tapInstalled) trackpad=\(hasTrackpad) spaces=\(Spaces.isAvailable)"
+            + "screenRecording=\(hasScreenRecording) tap=\(tapInstalled) trackpad=\(hasTrackpad) spaces=\(Spaces.isAvailable) "
+            + "swipe=\(SwipeFingers.description)"
         if status != lastStatus {
             lastStatus = status
             log.notice("\(status, privacy: .public)")
@@ -148,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `evaluate` runs every 2 s only while its result can change with no notice to the app:
     /// - a part is missing (a permission not given yet, no trackpad found, a tap not installed);
     /// - System Settings is in front, where the user gives and takes away the permissions and changes
-    ///   the keyboard shortcuts.
+    ///   the keyboard shortcuts and the trackpad swipe.
     /// At all other times the app has no timer. A change of the app's own settings, a wake, a change of
     /// the displays and the menu call `evaluate` directly.
     private func updatePolling() {
