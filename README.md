@@ -86,7 +86,7 @@ The macOS keyboard shortcuts for "move left a space" and "move right a space" us
 
 ### Three or four fingers
 
-Choose **Swipe With** in the menu bar menu to swipe with three or four fingers. Choose the same number as System Settings > Trackpad > More Gestures > Swipe between full-screen applications. With three finger drag on, macOS swipes with four, and Four Fingers keeps a drag of a window from switching the space. Until you choose, Interspace uses the number from your trackpad settings.
+Interspace takes the swipe you already use: the one in System Settings > Trackpad > More Gestures > Swipe between full-screen applications. Set to three fingers, swipe with three. Set to four, as macOS does when three finger drag is on, swipe with four, and a three finger drag of a window stays a drag. Set to off, Interspace takes no swipe either, and the keyboard shortcuts still work. A change there applies at once.
 
 ## How it works
 

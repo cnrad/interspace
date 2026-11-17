@@ -61,7 +61,6 @@ final class AppSettings: ObservableObject {
     private static let dockMovesWithSpaceKey = "dockMovesWithSpace"
     private static let roundedCornersKey = "roundedCorners"
     private static let showsMenuBarIconKey = "showsMenuBarIcon"
-    private static let swipeFingersKey = "swipeFingers"
     private let defaults = UserDefaults.standard
 
     @Published var transition: TransitionStyle {
@@ -99,11 +98,6 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(showsMenuBarIcon, forKey: Self.showsMenuBarIconKey) }
     }
 
-    /// The number of fingers of a swipe between spaces. Until the user chooses, the number of macOS.
-    @Published var swipeFingers: SwipeFingers {
-        didSet { defaults.set(swipeFingers.rawValue, forKey: Self.swipeFingersKey) }
-    }
-
     /// The transition to go back to when the user turns the custom transition on again.
     private(set) var lastCustomTransition = TransitionStyle.lightweight
 
@@ -120,7 +114,6 @@ final class AppSettings: ObservableObject {
         dockMovesWithSpace = (defaults.object(forKey: Self.dockMovesWithSpaceKey) as? Bool) ?? true
         roundedCorners = (defaults.object(forKey: Self.roundedCornersKey) as? Bool) ?? true
         showsMenuBarIcon = (defaults.object(forKey: Self.showsMenuBarIconKey) as? Bool) ?? true
-        swipeFingers = (defaults.object(forKey: Self.swipeFingersKey) as? Int).flatMap { SwipeFingers(rawValue: $0) } ?? .system
 
         let stored = defaults.double(forKey: Self.speedKey)
         speed = stored > 0 ? min(max(stored, Self.speedRange.lowerBound), Self.speedRange.upperBound) : 1

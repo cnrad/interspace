@@ -88,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Turns the transition on only when every part it needs works. If not, the system swipe stays as it is.
     private func evaluate() {
         hasAccessibility = AXIsProcessTrusted()
+        // The swipe of macOS changes in System Settings too.
+        SwipeFingers.refresh()
         let screenRecording = CGPreflightScreenCaptureAccess()
         if screenRecording, !hasScreenRecording {
             controller.prewarm()
@@ -108,7 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let active = settings.transition.isCustom && hasAccessibility && hasScreenRecording && tapInstalled && hasTrackpad
             && Spaces.isAvailable
         let status = "active=\(active) transition=\(settings.transition.rawValue) accessibility=\(hasAccessibility) "
-            + "screenRecording=\(hasScreenRecording) tap=\(tapInstalled) trackpad=\(hasTrackpad) spaces=\(Spaces.isAvailable)"
+            + "screenRecording=\(hasScreenRecording) tap=\(tapInstalled) trackpad=\(hasTrackpad) spaces=\(Spaces.isAvailable) "
+            + "swipe=\(SwipeFingers.description)"
         if status != lastStatus {
             lastStatus = status
             log.notice("\(status, privacy: .public)")
@@ -148,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `evaluate` runs every 2 s only while its result can change with no notice to the app:
     /// - a part is missing (a permission not given yet, no trackpad found, a tap not installed);
     /// - System Settings is in front, where the user gives and takes away the permissions and changes
-    ///   the keyboard shortcuts.
+    ///   the keyboard shortcuts and the trackpad swipe.
     /// At all other times the app has no timer. A change of the app's own settings, a wake, a change of
     /// the displays and the menu call `evaluate` directly.
     private func updatePolling() {
@@ -232,18 +235,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         enabled.state = settings.transition.isCustom ? .on : .off
         menu.addItem(enabled)
 
-        // Three or four fingers, as in System Settings > Trackpad. See `SwipeFingers`.
-        let fingers = NSMenu()
-        for count in SwipeFingers.allCases {
-            let item = actionItem(count.title, #selector(chooseSwipeFingers(_:)))
-            item.tag = count.rawValue
-            item.state = settings.swipeFingers == count ? .on : .off
-            fingers.addItem(item)
-        }
-        let swipeWith = NSMenuItem(title: "Swipe With", action: nil, keyEquivalent: "")
-        swipeWith.submenu = fingers
-        menu.addItem(swipeWith)
-
         let open = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         open.target = self
         menu.addItem(open)
@@ -307,12 +298,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleEnabled() {
         settings.transition = settings.transition.isCustom ? .system : settings.lastCustomTransition
         evaluate()
-    }
-
-    /// A swipe that has started keeps its number of fingers. The next one uses the new number.
-    @objc private func chooseSwipeFingers(_ sender: NSMenuItem) {
-        guard let count = SwipeFingers(rawValue: sender.tag) else { return }
-        settings.swipeFingers = count
     }
 
     private var opensAtLogin: Bool {

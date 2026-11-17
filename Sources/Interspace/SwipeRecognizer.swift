@@ -21,9 +21,9 @@ final class SwipeRecognizer {
         case ignored
     }
 
-    /// The finger counts of a swipe between spaces, as chosen in the menu. It is read when a touch
-    /// starts, so it does not change in the middle of one.
-    private var fingerRange = AppSettings.shared.swipeFingers.range
+    /// The finger counts of the swipe of macOS. It is read when a touch starts, so it does not change
+    /// in the middle of one.
+    private var fingerRange = 3...4
 
     private var state = State.idle
     private var device: UInt = 0
@@ -41,7 +41,9 @@ final class SwipeRecognizer {
 
         switch state {
         case .idle:
-            fingerRange = AppSettings.shared.swipeFingers.range
+            // Off in System Settings: no swipe.
+            guard let range = SwipeFingers.range else { return }
+            fingerRange = range
             guard count >= fingerRange.lowerBound else { return }
             device = frame.device
             guard count <= fingerRange.upperBound else {
