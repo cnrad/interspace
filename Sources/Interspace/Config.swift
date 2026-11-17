@@ -82,7 +82,7 @@ enum Config {
 
     // MARK: Capture
 
-    /// Take the snapshot when three fingers touch down, before the direction is known.
+    /// Take the snapshot when the fingers of a swipe touch down, before the direction is known.
     /// Removes most of the delay at the start of a swipe.
     static let captureOnTouchDown = true
     /// A snapshot older than this (seconds) is taken again when the swipe starts.

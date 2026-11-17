@@ -232,6 +232,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         enabled.state = settings.transition.isCustom ? .on : .off
         menu.addItem(enabled)
 
+        // Three or four fingers, as in System Settings > Trackpad. See `SwipeFingers`.
+        let fingers = NSMenu()
+        for count in SwipeFingers.allCases {
+            let item = actionItem(count.title, #selector(chooseSwipeFingers(_:)))
+            item.tag = count.rawValue
+            item.state = settings.swipeFingers == count ? .on : .off
+            fingers.addItem(item)
+        }
+        let swipeWith = NSMenuItem(title: "Swipe With", action: nil, keyEquivalent: "")
+        swipeWith.submenu = fingers
+        menu.addItem(swipeWith)
+
         let open = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         open.target = self
         menu.addItem(open)
@@ -295,6 +307,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleEnabled() {
         settings.transition = settings.transition.isCustom ? .system : settings.lastCustomTransition
         evaluate()
+    }
+
+    /// A swipe that has started keeps its number of fingers. The next one uses the new number.
+    @objc private func chooseSwipeFingers(_ sender: NSMenuItem) {
+        guard let count = SwipeFingers(rawValue: sender.tag) else { return }
+        settings.swipeFingers = count
     }
 
     private var opensAtLogin: Bool {

@@ -84,6 +84,10 @@ Open **Settings…** from the menu bar icon to choose one. Each has a small movi
 
 The macOS keyboard shortcuts for "move left a space" and "move right a space" use the chosen transition too.
 
+### Three or four fingers
+
+Choose **Swipe With** in the menu bar menu to swipe with three or four fingers. Choose the same number as System Settings > Trackpad > More Gestures > Swipe between full-screen applications. With three finger drag on, macOS swipes with four, and Four Fingers keeps a drag of a window from switching the space. Until you choose, Interspace uses the number from your trackpad settings.
+
 ## How it works
 
 Interspace does not change macOS. The Dock still does every space switch.
